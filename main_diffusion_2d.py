@@ -95,7 +95,7 @@ def main():
         # x est un tableau contenant [X, Y, Z]
         pos_x = x[0]
         pos_y = x[1]
-        
+    
         # 1. Conversion en coordonnées polaires
         r = np.sqrt(pos_x**2 + pos_y**2)
         angle = np.arctan2(pos_y, pos_x) # Retourne un angle entre -pi et pi
@@ -105,12 +105,12 @@ def main():
         # et elle couvre un angle de 0 à pi/4 (45 degrés)
         r_pad_in = 0.1
         r_pad_out = 0.15
-        angle_min = 0.0
-        angle_max = np.pi / 4.0
+        angle_min = -np.pi / 5
+        angle_max = np.pi / 5
         
         # 3. Si on est dans la plaquette, on génère un flux de chaleur
         if (r_pad_in <= r <= r_pad_out) and (angle_min <= angle <= angle_max):
-            return 500.0 # Valeur du flux de friction (à ajuster)
+            return 100 # Valeur du flux de friction (à ajuster)
         else:
             return 0.0 # Ailleurs, pas de friction 
     def u0(x): return -0.5 #T initial de tout le disque 
@@ -127,7 +127,7 @@ def main():
     U = np.array([u0(x) for x in dof_coords], dtype=float)
 
     outer_dofs = border_dofs_from_tags(bnds_tags[0], tag_to_dof)
-    dir_dofs = outer_dofs
+    dir_dofs = np.array([], dtype=int)
 
     _, ax = setup_interactive_figure()
 
@@ -139,7 +139,7 @@ def main():
         Fnp1 = assemble_rhs_neumann(F0, elemTagsNeuBnd, elemNodeTagsNeuBnd, jacBnd, detBnd, coordsBnd, wBnd, NBnd, gNBnd, lambda x: g_inner(x, t+dt), tag_to_dof)
         # Note: We re-assemble the Neumann part of the rhs at each time step, since the Neumann data is time-dependent. If it were time-independent, we could compute it once and reuse it. We do it at time n and n+1 since the theta-scheme requires both.
 
-        dir_vals_np1 = u_outer(np.zeros(3), t+dt)*np.ones_like(outer_dofs)
+        dir_vals_np1 = np.array([], dtype=float)
         # The Dirichlet values are space independent in this example, so we can just evaluate them at the origin. If they were space-dependent, we would need to evaluate them at the coordinates of the Dirichlet dofs.
 
         U = theta_step(M, K, Fn, Fnp1, U, dt=dt, theta=args.theta, dirichlet_dofs=dir_dofs, dir_vals_np1=dir_vals_np1)
