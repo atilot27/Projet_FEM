@@ -2,184 +2,153 @@
 import numpy as np
 import gmsh
 
-
-def gmsh_init(model_name="fem1d"):
+def gmsh_init(model_name="Brake_Disc_3D"):
     gmsh.initialize()
     gmsh.model.add(model_name)
-
 
 def gmsh_finalize():
     gmsh.finalize()
 
-
-def build_1d_mesh(L=1.0, cl1=0.02, cl2=0.10, order=1):
-    """
-    Build and mesh a 1D segment [0,L] with different characteristic lengths.
-    Returns (line_tag, elemType, nodeTags, nodeCoords, elemTags, elemNodeTags).
-    """
-    p0 = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, cl1)
-    p1 = gmsh.model.geo.addPoint(L, 0.0, 0.0, cl2)
-    line = gmsh.model.geo.addLine(p0, p1)
-
-    gmsh.model.geo.synchronize()
-    gmsh.model.mesh.generate(1)
-    gmsh.model.mesh.setOrder(order)
-
-    elemType = gmsh.model.mesh.getElementType("line", order)
-
-    nodeTags, nodeCoords, _ = gmsh.model.mesh.getNodes()
-    elemTags, elemNodeTags = gmsh.model.mesh.getElementsByType(elemType)
-
-    return line, elemType, nodeTags, nodeCoords, elemTags, elemNodeTags
-
-
 def prepare_quadrature_and_basis(elemType, order):
-    """
-    Returns:
-      xi (flattened uvw), w (ngp), N (flattened bf), gN (flattened gbf)
-    """
+    """Récupère les points d'intégration et les fonctions de forme."""
     rule = f"Gauss{2 * order}"
     xi, w = gmsh.model.mesh.getIntegrationPoints(elemType, rule)
     _, N, _ = gmsh.model.mesh.getBasisFunctions(elemType, xi, "Lagrange")
     _, gN, _ = gmsh.model.mesh.getBasisFunctions(elemType, xi, "GradLagrange")
     return xi, np.asarray(w, dtype=float), N, gN
 
-
 def get_jacobians(elemType, xi, tag=-1):
-    """
-    Wrapper around gmsh.getJacobians.
-    Returns (jacobians, dets, coords)
-    """
+    """Calcul des Jacobiens pour les éléments."""
     jacobians, dets, coords = gmsh.model.mesh.getJacobians(elemType, xi, tag=tag)
     return jacobians, dets, coords
 
-
-def end_dofs_from_nodes(nodeCoords):
-    """
-    Robustly identify first/last node dofs from coordinates (x-min, x-max).
-    nodeCoords is flattened [x0,y0,z0, x1,y1,z1, ...]
-    Returns (left_dof, right_dof) as 0-based indices.
-    """
-    X = np.asarray(nodeCoords, dtype=float).reshape(-1, 3)[:, 0]
-    left = int(np.argmin(X))
-    right = int(np.argmax(X))
-    return left, right
-
-def border_dofs_from_tags(l_tags, tag_to_dof):
-    """
-    Converts a list of GMSH node tags into the corresponding 
-    compact matrix indices (DoFs).
-    """
-    # Ensure tags are integers
-    l_tags = np.asarray(l_tags, dtype=int)
-    
-    # Filter out any tags that might not be in our DoF mapping (like geometry points)
-    # then map them to our 0...N-1 indices
-    valid_mask = (tag_to_dof[l_tags] != -1)
-    l_dofs = tag_to_dof[l_tags[valid_mask]]
-    return l_dofs
-
-def getPhysical(name):
-    """
-    Get the physical group elements and nodes for a given name and dimension.
-    """
-    
+def getPhysicalEntities(name):
+    """Récupère les entités géométriques d'un groupe physique par son nom."""
     dimTags = gmsh.model.getEntitiesForPhysicalName(name)
-    elemTypes, elemTags, elemNodeTags = gmsh.model.mesh.getElements(dim=dimTags[0][0], tag=dimTags[0][1])
-    elemType = elemTypes[0]  # Assuming one element type per physical group
-    elemTags = elemTags[0]
-    elemNodeTags = elemNodeTags[0]
-    entityTag = dimTags[0][1]
-    return elemType, elemTags, elemNodeTags, entityTag
-    
+    if not dimTags:
+        return []
+    return dimTags
 
-def open_2d_mesh(msh_filename, order=1):
+def classify_surface_entities():
     """
-    Load a .msh file.
-
-    Parameters
-    ----------
-    msh_filename : str
-        Path to the .msh file
-    order : int
-        Polynomial order of elements
-
-    Returns
-    -------
-    elemType, nodeTags, nodeCoords, elemTags, elemNodeTags
+    Identifie les surfaces :
+    - ContactSurface : La piste de freinage (plat, entre R_min et R_max)
+    - CoolingSurface : Le reste (ailettes, moyeu, bordures)
     """
-
-    import gmsh
-
-    # --- load geometry
-    gmsh.open(msh_filename)
-
-    # --- high order
-    gmsh.model.mesh.setOrder(order)
-
-    # --- element type (triangles)
-    elemType = gmsh.model.mesh.getElementType("triangle", order)
-
-    # --- nodes
+    surfaces = gmsh.model.getEntities(2)
     nodeTags, nodeCoords, _ = gmsh.model.mesh.getNodes()
+    nodeCoords = np.asarray(nodeCoords, dtype=float).reshape(-1, 3)
+    tag_to_index = {int(tag): i for i, tag in enumerate(nodeTags)}
 
-    # --- elements
-    elemTags, elemNodeTags = gmsh.model.mesh.getElementsByType(elemType)
+    contact_tags = []
+    other_tags = []
 
-    surf = gmsh.model.getEntities(2)[0][1]
+    # Paramètres typiques d'un disque (à ajuster selon ton fichier STEP si nécessaire)
+    # On cherche les faces planes (normale Z) qui sont sur le disque de friction
+    R_INNER_CONTACT = 60.0  # Rayon min de la zone de contact des plaquettes
+    R_OUTER_CONTACT = 140.0 # Rayon max de la zone de contact
 
-    curve_tags = gmsh.model.getBoundary([(2, surf)], oriented=False)
-    
-    gmsh.model.addPhysicalGroup(1, [curve_tags[0][1]], tag=1)
-    gmsh.model.setPhysicalName(1, 1, "OuterBoundary")
+    for dim, tag in surfaces:
+        elemTypes, elemTags, elemNodeTags = gmsh.model.mesh.getElements(dim=dim, tag=tag)
+        if len(elemTypes) == 0: continue
+        
+        tags = np.asarray(elemNodeTags[0], dtype=int)
+        unique_tags = np.unique(tags)
+        coords = nodeCoords[[tag_to_index[t] for t in unique_tags]]
+        
+        if coords.size == 0: continue
 
-    gmsh.model.addPhysicalGroup(1, [curve_tags[1][1]], tag=2)
-    gmsh.model.setPhysicalName(1, 2, "InnerBoundary")
+        centroid = coords.mean(axis=0)
+        radius = np.sqrt(centroid[0]**2 + centroid[1]**2)
+        
+        # Calcul de la normale moyenne de la surface
+        normal = np.zeros(3)
+        if coords.shape[0] >= 3:
+            v1 = coords[1] - coords[0]
+            v2 = coords[2] - coords[0]
+            normal = np.cross(v1, v2)
+            norm = np.linalg.norm(normal)
+            if norm > 0: normal /= norm
 
-    bnds = [('OuterBoundary', 1),('InnerBoundary', 1)]
+        # CRITÈRE : Si la surface est plane (normale Z dominante) 
+        # et située dans la zone radiale des plaquettes
+        if abs(normal[2]) > 0.9 and (R_INNER_CONTACT < radius < R_OUTER_CONTACT):
+            contact_tags.append(tag)
+        else:
+            other_tags.append(tag)
 
-    bnds_tags = []
-    for name, dim in bnds:
-        tag = -1
-        for t in gmsh.model.getPhysicalGroups(dim):
-            if gmsh.model.getPhysicalName(dim, t[1]) == name:
-                tag = t[1]
-                break
-        if tag == -1:
-            raise ValueError(f"Physical group '{name}' not found in mesh.")
-        bnds_tags.append(gmsh.model.mesh.getNodesForPhysicalGroup(dim, tag)[0])
+    return contact_tags, other_tags
 
-    return elemType, nodeTags, nodeCoords, elemTags, elemNodeTags, bnds, bnds_tags
+def classify_surface_by_color():
+    """Identifie les surfaces selon leur couleur CAO (Vert = Contact)."""
+    surfaces = gmsh.model.getEntities(2)
+    contact_tags = []
+    other_tags = []
 
+    for dim, tag in surfaces:
+        # Récupère la couleur (r, g, b, a)
+        r, g, b, a = gmsh.model.getColor(dim, tag)
+        
+        # Détection du vert : 
+        # On vérifie si le canal G est dominant ( > 200) et R, B sont faibles ( < 100)
+        # Cela permet d'être robuste aux nuances de vert.
+        if g > 200 and r < 100 and b < 100:
+            contact_tags.append(tag)
+        else:
+            other_tags.append(tag)
+            
+    return contact_tags, other_tags
 
-def build_brake_disc_2d(r_inner=0.05, r_outer=0.15, cl=0.01):
-    """
-    Crée un disque 2D (cylindre creux) avec Gmsh.
-    r_inner : rayon intérieur
-    r_outer : rayon extérieur
-    cl : taille des éléments (mesh size)
-    """
-    # Création des deux cercles
-    # Point central, puis rayon. (x, y, z, rayon)
-    c1 = gmsh.model.occ.addCircle(0, 0, 0, r_inner)
-    c2 = gmsh.model.occ.addCircle(0, 0, 0, r_outer)
-    
-    # Création des "Curve Loops" pour définir les frontières
-    l1 = gmsh.model.occ.addCurveLoop([c1])
-    l2 = gmsh.model.occ.addCurveLoop([c2])
-    
-    # Création de la surface entre les deux cercles
-    # Le premier loop est l'extérieur, le second crée le trou
-    surface = gmsh.model.occ.addPlaneSurface([l2, l1])
+def build_brake_disc_3d_no_viz(step_file="Break Disc Practice.stp", cl=10):
+    print(f"Importing STEP file: {step_file}")
+    gmsh.model.occ.importShapes(step_file)
     
     gmsh.model.occ.synchronize()
     
-    # Définition des groupes physiques (important pour tes CL)
-    gmsh.model.addPhysicalGroup(1, [c1], tag=1, name="InnerBoundary")
-    gmsh.model.addPhysicalGroup(1, [c2], tag=2, name="OuterBoundary")
-    gmsh.model.addPhysicalGroup(2, [surface], tag=10, name="DiscSurface")
-    
-    # Réglage de la taille des mailles
+    # --- CLASSIFICATION AVANT MAILLAGE ---
+    # Il est préférable d'identifier les entités juste après la synchro
+    contact_tags, other_tags = classify_surface_by_color()
+    print(f" > Surfaces de contact (vertes) identifiées : {contact_tags}")
+
+    # Réglage de la taille de maille
     gmsh.model.mesh.setSize(gmsh.model.getEntities(0), cl)
     
-    return surface
+
+    print("Génération du maillage 3D...")
+    gmsh.model.mesh.generate(3)
+    
+    nodeTags, _, _ = gmsh.model.mesh.getNodes()
+    # Récupération de tous les types d'éléments de dimension 3 (tétraèdres)
+    elemTypes, elemTags, _ = gmsh.model.mesh.getElements(dim=3)
+    
+    # --- CRÉATION DES GROUPES PHYSIQUES ---
+    if contact_tags:
+        gmsh.model.addPhysicalGroup(2, contact_tags, tag=100, name="ContactSurface")
+    if other_tags:
+        gmsh.model.addPhysicalGroup(2, other_tags, tag=101, name="OtherSurfaces")
+
+    volumes = [t[1] for t in gmsh.model.getEntities(3)]
+    gmsh.model.addPhysicalGroup(3, volumes, tag=1, name="DiscVolume")
+
+    # Préparation des bnds_tags
+    bnds = [("ContactSurface", 2), ("OtherSurfaces", 2)]
+    bnds_tags = []
+    for name, dim in bnds:
+        try:
+            p_tag = gmsh.model.getPhysicalGroups(dim)
+            # On cherche le tag correspondant au nom
+            actual_tag = -1
+            for pt in p_tag:
+                if gmsh.model.getPhysicalName(dim, pt[1]) == name:
+                    actual_tag = pt[1]
+                    break
+            
+            if actual_tag != -1:
+                nodes = gmsh.model.mesh.getNodesForPhysicalGroup(dim, actual_tag)[0]
+                bnds_tags.append(nodes)
+            else:
+                bnds_tags.append(np.array([], dtype=int))
+        except:
+            bnds_tags.append(np.array([], dtype=int))
+
+    return nodeTags, elemTypes, elemTags, bnds, bnds_tags
