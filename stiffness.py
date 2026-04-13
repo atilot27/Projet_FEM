@@ -87,3 +87,36 @@ def assemble_rhs_neumann(F, elemTags, conn, jac, det, xphys, w, N, gN, g_neu_fun
                 F[Ia] += wg * g_neu_g * N_a * detg
 
     return F
+
+
+def assemble_boundary_convection(K, F, elemTags, conn, jac, det, xphys, w, N, gN, h_fun, T_inf, tag_to_dof):
+    ne = len(elemTags)
+    ngp = len(w)
+    nloc = int(len(conn) // ne)
+
+    det = np.asarray(det, dtype=np.float64).reshape(ne, ngp)
+    xphys = np.asarray(xphys, dtype=np.float64).reshape(ne, ngp, 3)
+    jac = np.asarray(jac, dtype=np.float64).reshape(ne, ngp, 3, 3)
+    conn = np.asarray(conn, dtype=np.int64).reshape(ne, nloc)
+    N = np.asarray(N, dtype=np.float64).reshape(ngp, nloc)
+    gN = np.asarray(gN, dtype=np.float64).reshape(ngp, nloc, 3)
+
+    for e in range(ne):
+        element_tags = conn[e, :]
+        dof_indices = tag_to_dof[element_tags]
+        for g in range(ngp):
+            xg = xphys[e, g]
+            wg = w[g]
+            detg = det[e, g]
+
+            h_g = float(h_fun(xg))
+            for a in range(nloc):
+                Ia = int(dof_indices[a])
+                N_a = N[g, a]
+                F[Ia] += wg * h_g * T_inf * N_a * detg
+                for b in range(nloc):
+                    Ib = int(dof_indices[b])
+                    N_b = N[g, b]
+                    K[Ia, Ib] += wg * h_g * N_a * N_b * detg
+
+    return K, F

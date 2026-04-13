@@ -1,36 +1,94 @@
 # main_diffusion_3d.py
 import argparse
+from dataclasses import dataclass
 import numpy as np
 import gmsh
+from scipy.sparse import lil_matrix
 
 from gmsh_utils import (
-    getPhysicalEntities, gmsh_init, gmsh_finalize, build_brake_disc_3d_no_viz, 
+    getPhysicalEntities, gmsh_init, gmsh_finalize, build_brake_disc_3d_basic, 
     prepare_quadrature_and_basis, get_jacobians
 )
-from stiffness import assemble_rhs_neumann, assemble_stiffness_and_rhs
+
+
+@dataclass
+class SimulationParameters:
+    "Paramètre liée à la simulation"
+    order: int = 1
+    theta: float = 1.0
+    dt: float = 1.0e-03
+    nsteps: int = 5000
+
+    "Vitesse de la roue en rad/s (ex: 1200 rpm = 125.66 rad/s)"
+    omega: float = 4
+
+    "Paramètres de convection pour moduler l'effet du vent sur la convection"
+    h_conv: float = 1.0 #(Paramètre à ajuster)
+    wind_speed: float = 10.0 # m/s, pour moduler l'effet du vent (Paramètre à ajuster)
+    T_ext: float = 20.0
+    convection_speed_factor: float = 0.1 #(Paramètre à ajuster)
+
+    "Paramètres du mesh"
+    mesh_size: float = 7.0 #Attention, si tu met 1, ça va faire 600000 éléments
+
+    "Paramètres de diffusion"
+    kappa_value: float = 25.0 #W/m/K
+    initial_temperature: float = 20.0
+
+    "Paramètres des plaquettes de frein"
+    pad_center_x: float = 65.0
+    pad_half_width: float = 15.0
+    pad_half_height: float = 20.0
+    thickness: float = 5.0 #Epaisseur du disque de frein
+    pad_flux_value: float = 5000.0#(Paramètre à ajuster)
+
+    "Paramètres d'affichage dans Gmsh"
+    colormap: int = 4 #Pour changer la couleur
+    temperature_min: float = -50.0
+    temperature_max: float = 1500.0
+    background_color: tuple = (255, 255, 255)
+    view_light: int = 1
+    hide_mesh_edges: bool = True #Cache le maillage pour que ça soit plus joli
+    contact_surface_name: str = "ContactSurface"
+    other_surface_name: str = "OtherSurfaces"
+    model_name: str = "Brake_Disc_Heat_Flux"
+    use_gmsh_gui: bool = True
+
+from stiffness import assemble_rhs_neumann, assemble_stiffness_and_rhs, assemble_boundary_convection
 from mass import assemble_mass
 from dirichlet import theta_step
 
 def main():
+
+    #-----------------------------------------------------------------------------------
+    # Simulation parameters:
+    #-----------------------------------------------------------------------------------
+
     print("Starting main simulation (Surface Heating)")
+    params = SimulationParameters()
+
     parser = argparse.ArgumentParser(description="Diffusion 3D with surface heat flux")
-    parser.add_argument("-order", type=int, default=1)
-    parser.add_argument("--theta", type=float, default=1.0)
-    parser.add_argument("--dt", type=float, default=1.0e-02)
-    parser.add_argument("--nsteps", type=int, default=500)
-    parser.add_argument("--gmsh-view", action="store_true")
+    parser.add_argument("--no-gmsh-view", action="store_true",
+                        help="Disable Gmsh GUI after the simulation")
     args = parser.parse_args()
+    if args.no_gmsh_view:
+        params.use_gmsh_gui = False
 
-    dt = args.dt
-    gmsh_init("Brake_Disc_Heat_Flux")
+    dt = params.dt
 
-    # --- GÉNÉRATION DU MAILLAGE ---
-    # On récupère les tags avec la nouvelle classification radiale
-    nodeTags, elemTypes, elemTags, bnds, bnds_tags = build_brake_disc_3d_no_viz(step_file="Break Disc Practice.stp", cl=10)
-    gmsh.model.mesh.setOrder(args.order)
+    #-----------------------------------------------------------------------------------
+    # Génération du maillage:
+    #-----------------------------------------------------------------------------------
 
-    # --- EXTRACTION DES DONNÉES ---
-    elemType = gmsh.model.mesh.getElementType("tetrahedron", args.order)
+    gmsh_init(params.model_name)
+    nodeTags, elemTypes, elemTags, bnds, bnds_tags = build_brake_disc_3d_basic(cl=params.mesh_size)
+    gmsh.model.mesh.setOrder(params.order)
+
+    #-----------------------------------------------------------------------------------
+    # Extraction des données
+    #-----------------------------------------------------------------------------------
+
+    elemType = gmsh.model.mesh.getElementType("tetrahedron", params.order)
     nodeTags, nodeCoords, _ = gmsh.model.mesh.getNodes()
     elemTags, elemNodeTags = gmsh.model.mesh.getElementsByType(elemType)
 
@@ -46,31 +104,95 @@ def main():
         tag_to_dof[int(tag)] = i
         dof_coords[i] = all_coords[tag_to_index[int(tag)]]
 
-    xi, w, N, gN = prepare_quadrature_and_basis(elemType, args.order)
+    xi, w, N, gN = prepare_quadrature_and_basis(elemType, params.order)
     jac, det, coords = get_jacobians(elemType, xi)
 
-    # --- PARAMÈTRES PHYSIQUES ET FLUX ---
-    def kappa(x): return 0.5
-    def u0(x): return 30.0
-    
-    # On coupe la source volumique (le chauffage vient de la surface désormais)
-    def f_source_null(x, t): return 0.0 
+    #-----------------------------------------------------------------------------------
+    # Paramètres physiques et fonctions de source:
+    #-----------------------------------------------------------------------------------
 
-    # Condition de Neumann : Flux de chaleur imposé sur la piste de freinage
-    # Note : Le nom doit correspondre exactement à celui dans gmsh_utils.py
+    def kappa(x):
+        return params.kappa_value
+
+    def u0(x):
+        return params.initial_temperature
+
+    def f(x, t):
+        return 0.0
+
+    def rotate_point_about_z(x, theta):
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+        return np.array([
+            cos_t * x[0] + sin_t * x[1],
+            -sin_t * x[0] + cos_t * x[1],
+            x[2]
+        ])
+
+    def flux(x, t):
+        theta = params.omega * t
+        x_rot = rotate_point_about_z(x, theta)
+
+        is_top = abs(x_rot[2] - params.thickness) < 1e-3
+        is_bottom = abs(x_rot[2]) < 1e-3
+        if not (is_top or is_bottom):
+            return 0.0
+
+        if abs(x_rot[0] - params.pad_center_x) <= params.pad_half_width and abs(x_rot[1]) <= params.pad_half_height:
+            return params.pad_flux_value
+        return 0.0
+
+    # Condition de Neumann : flux non nul uniquement sur les zones de contact des plaquettes
     neumann_data = {
-        "ContactSurface": lambda x, t: 100.0, # Flux intense (W/m² ou unité cohérente)
-        "OtherSurfaces": lambda x, t: 0.0      # Isolé
+        params.contact_surface_name: flux,
+        params.other_surface_name: lambda x, t: 0.0
     }
 
-    # --- ASSEMBLAGE DES MATRICES DE BASE ---
-    M_lil = assemble_mass(elemTags, elemNodeTags, det, w, N, tag_to_dof)
-    # K et F0 (F0 sera vide car f_source est nulle)
-    K_lil, F0 = assemble_stiffness_and_rhs(elemTags, elemNodeTags, jac, det, coords, w, N, gN, 
-    kappa, lambda x: f_source_null(x, 0), tag_to_dof)
+    #-----------------------------------------------------------------------------------
+    # Assemblage des matrices et vecteurs
+    #-----------------------------------------------------------------------------------
 
+    M_lil = assemble_mass(elemTags, elemNodeTags, det, w, N, tag_to_dof)
+    K_lil, F0 = assemble_stiffness_and_rhs(elemTags, elemNodeTags, jac, det, coords, w, N, gN, kappa, lambda x: f(x, 0), tag_to_dof)
+
+    # Ici, on prépare les contributions de convection aux surfaces.
+    K_conv_lil = lil_matrix((len(F0), len(F0)), dtype=float)
+    F_conv = np.zeros(len(F0), dtype=float)
+
+    if params.h_conv > 0.0:
+        def h_effective(x):
+            return params.h_conv * (1.0 + params.convection_speed_factor * params.wind_speed)
+
+        for name in neumann_data:
+            entities = getPhysicalEntities(name)
+            for dim, entityTag in entities:
+                elemTypesBnd, elemTagsBnd, elemNodeTagsBnd = gmsh.model.mesh.getElements(dim=dim, tag=entityTag)
+                if not elemTypesBnd:
+                    continue
+
+                eTypeBnd = elemTypesBnd[0]
+                xiBnd, wBnd, NBnd, gNBnd = prepare_quadrature_and_basis(eTypeBnd, params.order)
+                jacBnd, detBnd, coordsBnd = get_jacobians(eTypeBnd, xiBnd, tag=entityTag)
+
+                K_conv_lil, F_conv = assemble_boundary_convection(
+                    K_conv_lil,
+                    F_conv,
+                    elemTagsBnd[0],
+                    elemNodeTagsBnd[0],
+                    jacBnd,
+                    detBnd,
+                    coordsBnd,
+                    wBnd,
+                    NBnd,
+                    gNBnd,
+                    h_effective,
+                    params.T_ext,
+                    tag_to_dof
+                )
+    #Ici on ajoute la contribution de la convection à la matrice de rigidité et au second membre.
     M = M_lil.tocsr()
-    K = K_lil.tocsr()
+    K = (K_lil + K_conv_lil).tocsr()
+    F0 += F_conv
 
     U = np.array([u0(x) for x in dof_coords], dtype=float)
     dir_dofs = np.array([], dtype=int)
@@ -83,8 +205,11 @@ def main():
 
     view_tag = gmsh.view.add("Temperature Evolution")
 
-    # --- BOUCLE TEMPORELLE ---
-    for step in range(args.nsteps):
+    #-----------------------------------------------------------------------------------
+    # Boucle temporelle
+    #-----------------------------------------------------------------------------------
+    
+    for step in range(params.nsteps):
         t = step * dt
 
         # Initialisation des RHS pour le schéma en thêta
@@ -100,7 +225,7 @@ def main():
                 
                 # Récupération des données d'intégration pour la surface (triangles)
                 eTypeBnd = elemTypesBnd[0]
-                xiBnd, wBnd, NBnd, gNBnd = prepare_quadrature_and_basis(eTypeBnd, args.order)
+                xiBnd, wBnd, NBnd, gNBnd = prepare_quadrature_and_basis(eTypeBnd, params.order)
                 jacBnd, detBnd, coordsBnd = get_jacobians(eTypeBnd, xiBnd, tag=entityTag)
                 
                 # Accumulation du flux dans le second membre
@@ -108,27 +233,32 @@ def main():
                 Fnp1 = assemble_rhs_neumann(Fnp1, elemTagsBnd[0], elemNodeTagsBnd[0], jacBnd, detBnd, coordsBnd, wBnd, NBnd, gNBnd, lambda x: flux_func(x, t+dt), tag_to_dof)
 
         # Résolution du pas de temps
-        U = theta_step(M, K, F, Fnp1, U, dt=dt, theta=args.theta, dirichlet_dofs=dir_dofs, dir_vals_np1=np.array([]))
+        U = theta_step(M, K, F, Fnp1, U, dt=dt, theta=params.theta, dirichlet_dofs=dir_dofs, dir_vals_np1=np.array([]))
 
-        if step % 10 == 0 or step == args.nsteps - 1:
-            print(f"Step {step}/{args.nsteps}, t={t:.3f}s, Max T={np.max(U):.1f}°C")
+        if step % 10 == 0 or step == params.nsteps - 1:
+            print(f"Step {step}/{params.nsteps}, t={t:.3f}s, Max T={np.max(U):.1f}°C")
             temperature = point_scalars_from_dofs(U)
             gmsh.view.addModelData(view_tag, step, gmsh.model.getCurrent(), "NodeData", 
                                   nodeTags.astype(int).tolist(), temperature.reshape(-1, 1).tolist(), 
                                   time=t, numComponents=1)
-    
-    # --- CONFIGURATION FINALE DE L'AFFICHAGE ---
+
+    #-----------------------------------------------------------------------------------
+    # Configuration de l'affichage dans Gmsh
+    #-----------------------------------------------------------------------------------
+
     view_index = gmsh.view.getIndex(view_tag)
     v_str = f"View[{view_index}]"
     
     gmsh.option.setNumber(f"{v_str}.RangeType", 2)
-    gmsh.option.setNumber(f"{v_str}.CustomMin", 20.0) 
-    gmsh.option.setNumber(f"{v_str}.CustomMax", 1500.0)
-    gmsh.option.setNumber(f"{v_str}.ColormapNumber", 7) # Palette "Hot"
-    gmsh.option.setNumber(f"{v_str}.Light", 1)
-    gmsh.option.setColor("General.Background", 255, 255, 255)
-
-    if args.gmsh_view:
+    gmsh.option.setNumber(f"{v_str}.CustomMin", params.temperature_min)
+    gmsh.option.setNumber(f"{v_str}.CustomMax", params.temperature_max)
+    gmsh.option.setNumber(f"{v_str}.ColormapNumber", params.colormap)
+    gmsh.option.setNumber(f"{v_str}.Light", params.view_light)
+    gmsh.option.setColor("General.Background", *params.background_color)
+    if params.hide_mesh_edges:
+        gmsh.option.setNumber("Mesh.SurfaceEdges", 0)
+        gmsh.option.setNumber("Mesh.VolumeEdges", 0)
+    if params.use_gmsh_gui:
         gmsh.fltk.run()
 
     gmsh_finalize()
