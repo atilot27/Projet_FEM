@@ -17,19 +17,19 @@ class SimulationParameters:
     order: int = 1
     theta: float = 1.0
     dt: float = 1.0e-02
-    nsteps: int = 100
+    nsteps: int = 1000
 
     "Vitesse de la roue en rad/s (ex: 1200 rpm = 125.66 rad/s)"
     omega: float = 4
 
     "Paramètres de convection pour moduler l'effet du vent sur la convection"
-    h_conv: float = 0.5 #(Paramètre à ajuster)
-    wind_speed: float = 5 # m/s, pour moduler l'effet du vent (Paramètre à ajuster)
+    h_conv: float = 0.2 #(Paramètre à ajuster)
+    wind_speed: float = 0.0 # m/s, pour moduler l'effet du vent (Paramètre à ajuster)
     T_ext: float = 20.0
     convection_speed_factor: float = 0.1 #(Paramètre à ajuster)
 
     "Paramètres du mesh"
-    mesh_size: float = 50 #Attention, si tu met 1, ça va faire 600000 éléments
+    mesh_size: float = 20 #Attention, si tu met 1, ça va faire 600000 éléments
 
     "Paramètres de diffusion"
     kappa_value: float = 25.0 #W/m/K
