@@ -17,7 +17,7 @@ class SimulationParameters:
     order: int = 1
     theta: float = 1.0
     dt: float = 1.0e-02
-    nsteps: int = 500
+    nsteps: int = 100
 
     "Vitesse de la roue en rad/s (ex: 1200 rpm = 125.66 rad/s)"
     omega: float = 4
@@ -36,11 +36,12 @@ class SimulationParameters:
     initial_temperature: float = 20.0
 
     "Paramètres des plaquettes de frein"
-    pad_center_x: float = 0.055
-    pad_half_width: float = 0.07
-    pad_half_height: float = 0.02
-    thickness: float = 0.002 #Epaisseur du disque de frein
-    pad_flux_value: float = 500.0#(Paramètre à ajuster)
+    # Le STEP importé est en mm, donc on utilise des valeurs en mm ici.
+    pad_center_x: float = 80.0
+    pad_half_width: float = 30.0
+    pad_half_height: float = 15.0
+    thickness: float = 2.0 # Epaisseur du disque de frein en mm
+    pad_flux_value: float = 5000.0 # (Paramètre à ajuster)
 
     "Paramètres d'affichage dans Gmsh"
     colormap: int = 4 #Pour changer la couleur
@@ -104,6 +105,10 @@ def main():
         tag_to_dof[int(tag)] = i
         dof_coords[i] = all_coords[tag_to_index[int(tag)]]
 
+    z_min = float(np.min(dof_coords[:, 2]))
+    z_max = float(np.max(dof_coords[:, 2]))
+    z_tol = 1e-3
+
     xi, w, N, gN = prepare_quadrature_and_basis(elemType, params.order)
     jac, det, coords = get_jacobians(elemType, xi)
 
@@ -134,8 +139,8 @@ def main():
         theta = params.omega * t
         x_rot = rotate_point_about_z(x, theta)
 
-        is_top = abs(x_rot[2] - params.thickness) < 1e-3
-        is_bottom = abs(x_rot[2]) < 1e-3
+        is_top = abs(x_rot[2] - z_max) < z_tol
+        is_bottom = abs(x_rot[2] - z_min) < z_tol
         if not (is_top or is_bottom):
             return 0.0
 
