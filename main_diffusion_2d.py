@@ -16,20 +16,20 @@ class SimulationParameters:
     "Paramètre liée à la simulation"
     order: int = 1
     theta: float = 1.0
-    dt: float = 1.0e-03
-    nsteps: int = 5000
+    dt: float = 1.0e-02
+    nsteps: int = 500
 
     "Vitesse de la roue en rad/s (ex: 1200 rpm = 125.66 rad/s)"
     omega: float = 4
 
     "Paramètres de convection pour moduler l'effet du vent sur la convection"
-    h_conv: float = 1.0 #(Paramètre à ajuster)
-    wind_speed: float = 10.0 # m/s, pour moduler l'effet du vent (Paramètre à ajuster)
+    h_conv: float = 0.5 #(Paramètre à ajuster)
+    wind_speed: float = 5 # m/s, pour moduler l'effet du vent (Paramètre à ajuster)
     T_ext: float = 20.0
     convection_speed_factor: float = 0.1 #(Paramètre à ajuster)
 
     "Paramètres du mesh"
-    mesh_size: float = 7.0 #Attention, si tu met 1, ça va faire 600000 éléments
+    mesh_size: float = 3.0 #Attention, si tu met 1, ça va faire 600000 éléments
 
     "Paramètres de diffusion"
     kappa_value: float = 25.0 #W/m/K
@@ -124,12 +124,13 @@ def main():
         cos_t = np.cos(theta)
         sin_t = np.sin(theta)
         return np.array([
-            cos_t * x[0] + sin_t * x[1],
-            -sin_t * x[0] + cos_t * x[1],
+            cos_t * x[0] - sin_t * x[1],
+            sin_t * x[0] + cos_t * x[1],
             x[2]
         ])
 
     def flux(x, t):
+        # Le disque tourne dans le temps, le patin est fixe dans le repère.
         theta = params.omega * t
         x_rot = rotate_point_about_z(x, theta)
 
