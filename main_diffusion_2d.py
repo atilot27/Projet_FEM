@@ -7,7 +7,7 @@ from scipy.sparse import lil_matrix
 
 from gmsh_utils import (
     getPhysicalEntities, gmsh_init, gmsh_finalize, build_brake_disc_3d_basic, 
-    prepare_quadrature_and_basis, get_jacobians
+    prepare_quadrature_and_basis, get_jacobians, build_brake_disk_3d_disk1
 )
 
 
@@ -29,18 +29,18 @@ class SimulationParameters:
     convection_speed_factor: float = 0.1 #(Paramètre à ajuster)
 
     "Paramètres du mesh"
-    mesh_size: float = 3.0 #Attention, si tu met 1, ça va faire 600000 éléments
+    mesh_size: float = 50 #Attention, si tu met 1, ça va faire 600000 éléments
 
     "Paramètres de diffusion"
     kappa_value: float = 25.0 #W/m/K
     initial_temperature: float = 20.0
 
     "Paramètres des plaquettes de frein"
-    pad_center_x: float = 65.0
-    pad_half_width: float = 15.0
-    pad_half_height: float = 20.0
-    thickness: float = 5.0 #Epaisseur du disque de frein
-    pad_flux_value: float = 5000.0#(Paramètre à ajuster)
+    pad_center_x: float = 0.055
+    pad_half_width: float = 0.07
+    pad_half_height: float = 0.02
+    thickness: float = 0.002 #Epaisseur du disque de frein
+    pad_flux_value: float = 500.0#(Paramètre à ajuster)
 
     "Paramètres d'affichage dans Gmsh"
     colormap: int = 4 #Pour changer la couleur
@@ -81,7 +81,7 @@ def main():
     #-----------------------------------------------------------------------------------
 
     gmsh_init(params.model_name)
-    nodeTags, elemTypes, elemTags, bnds, bnds_tags = build_brake_disc_3d_basic(cl=params.mesh_size)
+    nodeTags, elemTypes, elemTags, bnds, bnds_tags = build_brake_disk_3d_disk1(cl=params.mesh_size)
     gmsh.model.mesh.setOrder(params.order)
 
     #-----------------------------------------------------------------------------------
