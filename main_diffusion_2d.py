@@ -17,7 +17,7 @@ class SimulationParameters:
     order: int = 1
     theta: float = 1.0
     dt: float = 1.0e-02
-    nsteps: int = 1000
+    nsteps: int = 600
 
     "Vitesse de la roue en rad/s (ex: 1200 rpm = 125.66 rad/s)"
     omega: float = 4
@@ -89,9 +89,17 @@ def main():
     # Extraction des données
     #-----------------------------------------------------------------------------------
 
-    elemType = gmsh.model.mesh.getElementType("tetrahedron", params.order)
     nodeTags, nodeCoords, _ = gmsh.model.mesh.getNodes()
-    elemTags, elemNodeTags = gmsh.model.mesh.getElementsByType(elemType)
+    elemTypes3D, elemTags3D, elemNodeTags3D = gmsh.model.mesh.getElements(dim=3)
+    if not elemTypes3D:
+        raise RuntimeError("Aucun élément volumique 3D n'a été trouvé dans le maillage. Vérifiez la génération du maillage.")
+
+    elemType = elemTypes3D[0]
+    elemTags = elemTags3D[0]
+    elemNodeTags = elemNodeTags3D[0]
+
+    if len(elemNodeTags) == 0:
+        raise RuntimeError("Aucun noeud d'élément n'a été trouvé pour le type d'élément 3D. Vérifiez la génération du maillage.")
 
     unique_dofs_tags = np.unique(elemNodeTags)
     num_dofs = len(unique_dofs_tags)

@@ -10,6 +10,38 @@ def gmsh_init(model_name="Brake_Disc_3D"):
 def gmsh_finalize():
     gmsh.finalize()
 
+
+def center_geometry_at_origin():
+    """Recentre la géométrie importée sur l'origine avant le maillage."""
+    entities = gmsh.model.getEntities()
+    if not entities:
+        return
+
+    xs = []
+    ys = []
+    zs = []
+    for dim, tag in entities:
+        try:
+            bb = gmsh.model.getBoundingBox(dim, tag)
+        except Exception:
+            continue
+        if bb is None:
+            continue
+        xs.extend((bb[0], bb[3]))
+        ys.extend((bb[1], bb[4]))
+        zs.extend((bb[2], bb[5]))
+
+    if not xs or not ys or not zs:
+        return
+
+    cx = 0.5 * (min(xs) + max(xs))
+    cy = 0.5 * (min(ys) + max(ys))
+    cz = 0.5 * (min(zs) + max(zs))
+
+    gmsh.model.occ.translate(entities, -cx, -cy, -cz)
+    gmsh.model.occ.synchronize()
+
+
 def prepare_quadrature_and_basis(elemType, order):
     """Récupère les points d'intégration et les fonctions de forme."""
     rule = f"Gauss{2 * order}"
@@ -38,13 +70,14 @@ def getPhysicalEntities(name):
 
 
 def build_brake_disk_3d_disk1(cl=10):
-    step_filename="Frein_velo_1.STEP"
+    step_filename="Frein_velo_1.step"
     print(f"Importing STEP geometry from {step_filename}")
 
     step_path = Path(__file__).resolve().parent / step_filename
     gmsh.merge(str(step_path))
     gmsh.model.occ.synchronize()
 
+    center_geometry_at_origin()
     gmsh.model.mesh.setSize(gmsh.model.getEntities(0), cl)
 
     print("Génération du maillage 3D à partir du STEP...")
