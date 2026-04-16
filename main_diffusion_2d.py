@@ -7,7 +7,8 @@ from scipy.sparse import lil_matrix
 
 from gmsh_utils import (
     getPhysicalEntities, gmsh_init, gmsh_finalize, build_brake_disc_3d_basic, 
-    prepare_quadrature_and_basis, get_jacobians, build_brake_disk_3d_disk1
+    prepare_quadrature_and_basis, get_jacobians, build_brake_disk_3d_disk1, build_brake_disk_3d_WVA,
+    build_brake_disk_3d_Pogi
 )
 
 
@@ -17,7 +18,7 @@ class SimulationParameters:
     order: int = 1
     theta: float = 1.0
     dt: float = 1.0e-02
-    nsteps: int = 600
+    nsteps: int = 500
 
     "Vitesse de la roue en rad/s (ex: 1200 rpm = 125.66 rad/s)"
     omega: float = 4
@@ -29,7 +30,7 @@ class SimulationParameters:
     convection_speed_factor: float = 0.1 #(Paramètre à ajuster)
 
     "Paramètres du mesh"
-    mesh_size: float = 20 #Attention, si tu met 1, ça va faire 600000 éléments
+    mesh_size: float = 50 #Attention, si tu met 1, ça va faire 600000 éléments
 
     "Paramètres de diffusion"
     kappa_value: float = 25.0 #W/m/K
@@ -41,7 +42,7 @@ class SimulationParameters:
     pad_half_width: float = 30.0
     pad_half_height: float = 15.0
     thickness: float = 2.0 # Epaisseur du disque de frein en mm
-    pad_flux_value: float = 5000.0 # (Paramètre à ajuster)
+    pad_flux_value: float = 2000.0 # (Paramètre à ajuster)
 
     "Paramètres d'affichage dans Gmsh"
     colormap: int = 4 #Pour changer la couleur
@@ -53,6 +54,7 @@ class SimulationParameters:
     contact_surface_name: str = "ContactSurface"
     other_surface_name: str = "OtherSurfaces"
     model_name: str = "Brake_Disc_Heat_Flux"
+    geometry_model: str = "WVA" #Choix du modèle de disque de frein : "disk1", "Pogi" ou "WVA"
     use_gmsh_gui: bool = True
 
 from stiffness import assemble_rhs_neumann, assemble_stiffness_and_rhs, assemble_boundary_convection
@@ -71,9 +73,12 @@ def main():
     parser = argparse.ArgumentParser(description="Diffusion 3D with surface heat flux")
     parser.add_argument("--no-gmsh-view", action="store_true",
                         help="Disable Gmsh GUI after the simulation")
+    parser.add_argument("--model", choices=["disk1", "Pogi", "WVA"], default=params.geometry_model,
+                        help="Choose the brake disk geometry to use: disk1, Pogi or WVA")
     args = parser.parse_args()
     if args.no_gmsh_view:
         params.use_gmsh_gui = False
+    params.geometry_model = args.model
 
     dt = params.dt
 
@@ -82,7 +87,13 @@ def main():
     #-----------------------------------------------------------------------------------
 
     gmsh_init(params.model_name)
-    nodeTags, elemTypes, elemTags, bnds, bnds_tags = build_brake_disk_3d_disk1(cl=params.mesh_size)
+    gmsh.option.setNumber("General.Terminal", 0)
+    if params.geometry_model == "disk1":
+        nodeTags, elemTypes, elemTags, bnds, bnds_tags = build_brake_disk_3d_disk1(cl=params.mesh_size)
+    elif params.geometry_model == "Pogi":
+        nodeTags, elemTypes, elemTags, bnds, bnds_tags = build_brake_disk_3d_Pogi(cl=params.mesh_size)
+    else:
+        nodeTags, elemTypes, elemTags, bnds, bnds_tags = build_brake_disk_3d_WVA(cl=params.mesh_size)
     gmsh.model.mesh.setOrder(params.order)
 
     #-----------------------------------------------------------------------------------
@@ -143,23 +154,30 @@ def main():
         ])
 
     def flux(x, t):
-        # Le disque tourne dans le temps, le patin est fixe dans le repère.
+        # Le disque tourne ; le patin de frein reste fixe dans le repère.
         theta = params.omega * t
         x_rot = rotate_point_about_z(x, theta)
 
-        is_top = abs(x_rot[2] - z_max) < z_tol
-        is_bottom = abs(x_rot[2] - z_min) < z_tol
-        if not (is_top or is_bottom):
-            return 0.0
+        # 1. Vérification X/Y : Est-on sous les plaquettes de frein ?
+        in_x = abs(x_rot[0] - params.pad_center_x) <= params.pad_half_width
+        in_y = abs(x_rot[1]) <= params.pad_half_height
 
-        if abs(x_rot[0] - params.pad_center_x) <= params.pad_half_width and abs(x_rot[1]) <= params.pad_half_height:
+        # 2. Vérification Z : Est-on sur une face extérieure ?
+        # On demande à ce que le point soit suffisamment éloigné du centre Z=0
+        # (ex: au-delà de 40% de la demi-épaisseur) pour éviter de chauffer 
+        # l'intérieur d'éventuels trous de ventilation.
+        half_thick = params.thickness / 2.0
+        is_external_face = abs(x_rot[2]) > (half_thick * 0.4)
+
+        if in_x and in_y and is_external_face:
             return params.pad_flux_value
+            
         return 0.0
 
     # Condition de Neumann : flux non nul uniquement sur les zones de contact des plaquettes
     neumann_data = {
         params.contact_surface_name: flux,
-        params.other_surface_name: lambda x, t: 0.0
+        params.other_surface_name: flux
     }
 
     #-----------------------------------------------------------------------------------
@@ -264,6 +282,7 @@ def main():
     v_str = f"View[{view_index}]"
     
     gmsh.option.setNumber(f"{v_str}.RangeType", 2)
+    
     gmsh.option.setNumber(f"{v_str}.CustomMin", params.temperature_min)
     gmsh.option.setNumber(f"{v_str}.CustomMax", params.temperature_max)
     gmsh.option.setNumber(f"{v_str}.ColormapNumber", params.colormap)

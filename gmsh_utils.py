@@ -42,6 +42,45 @@ def center_geometry_at_origin():
     gmsh.model.occ.synchronize()
 
 
+def get_surface_z_stats(dim, tag):
+    """Retourne la moyenne z, l'étendue en z et les coordonnées d'une surface."""
+    try:
+        _, coordsSurf_raw, _ = gmsh.model.mesh.getNodes(dim, tag)
+        coordsSurf = np.asarray(coordsSurf_raw, dtype=float).reshape(-1, 3)
+    except Exception:
+        coordsSurf = np.empty((0, 3), dtype=float)
+
+    if coordsSurf.size == 0:
+        bb = gmsh.model.getBoundingBox(dim, tag)
+        coordsSurf = np.array([[bb[0], bb[1], bb[2]], [bb[3], bb[4], bb[5]]], dtype=float)
+
+    z_values = coordsSurf[:, 2]
+    return float(np.mean(z_values)), float(np.ptp(z_values)), coordsSurf
+
+
+def is_contact_surface(dim, tag, z_min, z_max, tol=None):
+    z_mean, z_range, coordsSurf = get_surface_z_stats(dim, tag)
+    thickness = abs(z_max - z_min)
+    if tol is None:
+        tol = max(1e-3, 0.01 * thickness)
+    z_tol = max(tol, 0.01 * thickness)
+
+    if z_range < z_tol and (abs(z_mean - z_min) < z_tol or abs(z_mean - z_max) < z_tol):
+        return True
+
+    if coordsSurf.shape[0] >= 3:
+        v1 = coordsSurf[1] - coordsSurf[0]
+        v2 = coordsSurf[2] - coordsSurf[0]
+        normal = np.cross(v1, v2)
+        norm = np.linalg.norm(normal)
+        if norm > 0:
+            normal /= norm
+            if abs(normal[2]) > 0.75 and (abs(z_mean - z_min) < z_tol or abs(z_mean - z_max) < z_tol):
+                return True
+
+    return False
+
+
 def prepare_quadrature_and_basis(elemType, order):
     """Récupère les points d'intégration et les fonctions de forme."""
     rule = f"Gauss{2 * order}"
@@ -69,6 +108,32 @@ def getPhysicalEntities(name):
     return entities
 
 
+def ensure_contact_surface_groups(contact_name="ContactSurface", other_name="OtherSurfaces"):
+    """Crée les groupes physiques ContactSurface / OtherSurfaces si nécessaires."""
+    if getPhysicalEntities(contact_name):
+        return
+
+    z_min = float('inf')
+    z_max = -float('inf')
+    for dim, tag in gmsh.model.getEntities(2):
+        bb = gmsh.model.getBoundingBox(dim, tag)
+        z_min = min(z_min, bb[2])
+        z_max = max(z_max, bb[5])
+
+    contact_tags = []
+    other_tags = []
+    for dim, tag in gmsh.model.getEntities(2):
+        if is_contact_surface(dim, tag, z_min, z_max):
+            contact_tags.append(tag)
+        else:
+            other_tags.append(tag)
+
+    if contact_tags:
+        gmsh.model.addPhysicalGroup(2, contact_tags, tag=100, name=contact_name)
+    if other_tags:
+        gmsh.model.addPhysicalGroup(2, other_tags, tag=101, name=other_name)
+
+
 def build_brake_disk_3d_disk1(cl=10):
     step_filename="Frein_velo_1.step"
     print(f"Importing STEP geometry from {step_filename}")
@@ -82,35 +147,10 @@ def build_brake_disk_3d_disk1(cl=10):
 
     print("Génération du maillage 3D à partir du STEP...")
     gmsh.model.mesh.generate(3)
+    ensure_contact_surface_groups()
 
     nodeTags, _, _ = gmsh.model.mesh.getNodes()
     elemTypes, elemTags, _ = gmsh.model.mesh.getElements(dim=3)
-
-    # Classification des surfaces : les deux faces planes du disque sont chauffées.
-    contact_tags = []
-    other_tags = []
-    for dim, tag in gmsh.model.getEntities(2):
-        nodeTagsSurf, coordsSurf, _ = gmsh.model.mesh.getNodes(dim, tag)
-        coordsSurf = np.asarray(coordsSurf, dtype=float).reshape(-1, 3)
-
-        normal = np.array([0.0, 0.0, 0.0])
-        if coordsSurf.shape[0] >= 3:
-            v1 = coordsSurf[1] - coordsSurf[0]
-            v2 = coordsSurf[2] - coordsSurf[0]
-            normal = np.cross(v1, v2)
-            norm = np.linalg.norm(normal)
-            if norm > 0:
-                normal /= norm
-
-        if abs(normal[2]) > 0.9:
-            contact_tags.append(tag)
-        else:
-            other_tags.append(tag)
-
-    if contact_tags:
-        gmsh.model.addPhysicalGroup(2, contact_tags, tag=100, name="ContactSurface")
-    if other_tags:
-        gmsh.model.addPhysicalGroup(2, other_tags, tag=101, name="OtherSurfaces")
 
     volumes = [t[1] for t in gmsh.model.getEntities(3)]
     if volumes:
@@ -134,6 +174,84 @@ def build_brake_disk_3d_disk1(cl=10):
     return nodeTags, elemTypes, elemTags, bnds, bnds_tags
 
 
+def build_brake_disk_3d_WVA(cl=10):
+    step_filename="Frein_velo_Van_Aert.step"
+    print(f"Importing STEP geometry from {step_filename}")
+
+    step_path = Path(__file__).resolve().parent / step_filename
+    gmsh.merge(str(step_path))
+    gmsh.model.occ.synchronize()
+
+    center_geometry_at_origin()
+    gmsh.model.mesh.setSize(gmsh.model.getEntities(0), cl)
+
+    print("Génération du maillage 3D à partir du STEP...")
+    gmsh.model.mesh.generate(3)
+    ensure_contact_surface_groups()
+
+    nodeTags, _, _ = gmsh.model.mesh.getNodes()
+    elemTypes, elemTags, _ = gmsh.model.mesh.getElements(dim=3)
+
+    volumes = [t[1] for t in gmsh.model.getEntities(3)]
+    if volumes:
+        gmsh.model.addPhysicalGroup(3, volumes, tag=1, name="DiscVolume")
+
+    bnds = [("ContactSurface", 2), ("OtherSurfaces", 2)]
+    bnds_tags = []
+    for name, dim in bnds:
+        actual_tag = -1
+        for pt in gmsh.model.getPhysicalGroups(dim):
+            if gmsh.model.getPhysicalName(dim, pt[1]) == name:
+                actual_tag = pt[1]
+                break
+
+        if actual_tag != -1:
+            nodes = gmsh.model.mesh.getNodesForPhysicalGroup(dim, actual_tag)[0]
+            bnds_tags.append(nodes)
+        else:
+            bnds_tags.append(np.array([], dtype=int))
+
+    return nodeTags, elemTypes, elemTags, bnds, bnds_tags
+
+def build_brake_disk_3d_Pogi(cl=10):
+    step_filename="Frein_velo_Pogacar.step"
+    print(f"Importing STEP geometry from {step_filename}")
+
+    step_path = Path(__file__).resolve().parent / step_filename
+    gmsh.merge(str(step_path))
+    gmsh.model.occ.synchronize()
+
+    center_geometry_at_origin()
+    gmsh.model.mesh.setSize(gmsh.model.getEntities(0), cl)
+
+    print("Génération du maillage 3D à partir du STEP...")
+    gmsh.model.mesh.generate(3)
+    ensure_contact_surface_groups()
+
+    nodeTags, _, _ = gmsh.model.mesh.getNodes()
+    elemTypes, elemTags, _ = gmsh.model.mesh.getElements(dim=3)
+
+    volumes = [t[1] for t in gmsh.model.getEntities(3)]
+    if volumes:
+        gmsh.model.addPhysicalGroup(3, volumes, tag=1, name="DiscVolume")
+
+    bnds = [("ContactSurface", 2), ("OtherSurfaces", 2)]
+    bnds_tags = []
+    for name, dim in bnds:
+        actual_tag = -1
+        for pt in gmsh.model.getPhysicalGroups(dim):
+            if gmsh.model.getPhysicalName(dim, pt[1]) == name:
+                actual_tag = pt[1]
+                break
+
+        if actual_tag != -1:
+            nodes = gmsh.model.mesh.getNodesForPhysicalGroup(dim, actual_tag)[0]
+            bnds_tags.append(nodes)
+        else:
+            bnds_tags.append(np.array([], dtype=int))
+
+    return nodeTags, elemTypes, elemTags, bnds, bnds_tags
+
 def build_brake_disc_3d_basic(cl=10):
     print("Building a simple disk-shaped cylinder geometry")
 
@@ -150,37 +268,10 @@ def build_brake_disc_3d_basic(cl=10):
 
     print("Génération du maillage 3D...")
     gmsh.model.mesh.generate(3)
+    ensure_contact_surface_groups()
 
     nodeTags, _, _ = gmsh.model.mesh.getNodes()
     elemTypes, elemTags, _ = gmsh.model.mesh.getElements(dim=3)
-
-    # Classification des surfaces : les deux faces planes du disque sont chauffées.
-    contact_tags = []
-    other_tags = []
-    for dim, tag in gmsh.model.getEntities(2):
-        nodeTagsSurf, coordsSurf, _ = gmsh.model.mesh.getNodes(dim, tag)
-        coordsSurf = np.asarray(coordsSurf, dtype=float).reshape(-1, 3)
-        z_mean = coordsSurf[:, 2].mean() if coordsSurf.size else 0.0
-
-        normal = np.array([0.0, 0.0, 0.0])
-        if coordsSurf.shape[0] >= 3:
-            v1 = coordsSurf[1] - coordsSurf[0]
-            v2 = coordsSurf[2] - coordsSurf[0]
-            normal = np.cross(v1, v2)
-            norm = np.linalg.norm(normal)
-            if norm > 0:
-                normal /= norm
-
-        # Les faces planes supérieures et inférieures ont une normale proche de l'axe Z.
-        if abs(normal[2]) > 0.9:
-            contact_tags.append(tag)
-        else:
-            other_tags.append(tag)
-
-    if contact_tags:
-        gmsh.model.addPhysicalGroup(2, contact_tags, tag=100, name="ContactSurface")
-    if other_tags:
-        gmsh.model.addPhysicalGroup(2, other_tags, tag=101, name="OtherSurfaces")
 
     volumes = [t[1] for t in gmsh.model.getEntities(3)]
     if volumes:
