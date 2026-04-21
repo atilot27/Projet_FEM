@@ -17,7 +17,7 @@ class SimulationParameters:
     "Paramètre liée à la simulation"
     order: int = 1
     theta: float = 1.0
-    dt: float = 1.0e-02
+    dt: float = 1.0e-01
     nsteps: int = 200
 
     "Vitesse de la roue en rad/s (rayon de 34cm et à 45km/h, ça fait environ 12.5 rad/s)"
@@ -33,14 +33,14 @@ class SimulationParameters:
     k02 = 0.04511 
     delta_T_moyen = 50.0
     bike_speed = 45.0 / 3.6
-    h_conv = k00 + k10 * delta_T_moyen + k01 * bike_speed + K11 * bike_speed * delta_T_moyen + k02 * bike_speed**2
+    h_conv = (k00 + k10 * delta_T_moyen + k01 * bike_speed + K11 * bike_speed * delta_T_moyen + k02 * bike_speed**2)*1e-6 #W/mm²K, coefficient de convection pour les faces exposées au vent (calculé à partir d'une formule empirique)
 
 
     "Paramètres du mesh"
     mesh_size: float = 50 #Attention, si tu met 1, ça va faire 600000 éléments
 
     "Paramètres de diffusion"
-    kappa_value: float = 10e-5 #m^2/s, diffusivité thermique typique de l'acier
+    kappa_value: float = 10e-5 * 1e6 #mm^2/s, diffusivité thermique typique de l'acier
     initial_temperature: float = 15.0
     T_ext: float = 15.0
 
@@ -51,7 +51,7 @@ class SimulationParameters:
     pad_half_height: float = 9.0
     thickness: float = 2.0 # Epaisseur du disque de frein en mm
     contact_surface = 343.25 # mm² (Pogi:343.25 WVA: 260.25 )
-    puissance_a_dissiper = 10000.0 # W
+    puissance_a_dissiper = 100.0 # W
     pad_flux_value: float = puissance_a_dissiper / contact_surface  #W/mm²
 
     "Paramètres d'affichage dans Gmsh"
