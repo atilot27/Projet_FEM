@@ -18,43 +18,53 @@ class SimulationParameters:
     order: int = 1
     theta: float = 1.0
     dt: float = 1.0e-02
-    nsteps: int = 500
+    nsteps: int = 200
 
-    "Vitesse de la roue en rad/s (ex: 1200 rpm = 125.66 rad/s)"
-    omega: float = 4
+    "Vitesse de la roue en rad/s (rayon de 34cm et à 45km/h, ça fait environ 12.5 rad/s)"
+    rayon = 0.34
+    omega: float = 45.0 / 3.6 / rayon
 
     "Paramètres de convection pour moduler l'effet du vent sur la convection"
-    h_conv: float = 0.2 #(Paramètre à ajuster)
-    wind_speed: float = 0.0 # m/s, pour moduler l'effet du vent (Paramètre à ajuster)
-    T_ext: float = 20.0
-    convection_speed_factor: float = 0.1 #(Paramètre à ajuster)
+    #Left
+    k00 = 1.896
+    k10 = 0.01784
+    k01 = 6.505
+    K11 = -0.009343
+    k02 = 0.04511 
+    delta_T_moyen = 50.0
+    bike_speed = 45.0 / 3.6
+    h_conv = k00 + k10 * delta_T_moyen + k01 * bike_speed + K11 * bike_speed * delta_T_moyen + k02 * bike_speed**2
+
 
     "Paramètres du mesh"
     mesh_size: float = 50 #Attention, si tu met 1, ça va faire 600000 éléments
 
     "Paramètres de diffusion"
-    kappa_value: float = 25.0 #W/m/K
-    initial_temperature: float = 20.0
+    kappa_value: float = 10e-5 #m^2/s, diffusivité thermique typique de l'acier
+    initial_temperature: float = 15.0
+    T_ext: float = 15.0
 
     "Paramètres des plaquettes de frein"
     # Le STEP importé est en mm, donc on utilise des valeurs en mm ici.
-    pad_center_x: float = 80.0
-    pad_half_width: float = 30.0
-    pad_half_height: float = 15.0
+    pad_center_x: float = 61.5
+    pad_half_width: float = 15.0
+    pad_half_height: float = 9.0
     thickness: float = 2.0 # Epaisseur du disque de frein en mm
-    pad_flux_value: float = 2000.0 # (Paramètre à ajuster)
+    contact_surface = 343.25 # mm² (Pogi:343.25 WVA: 260.25 )
+    puissance_a_dissiper = 10000.0 # W
+    pad_flux_value: float = puissance_a_dissiper / contact_surface  #W/mm²
 
     "Paramètres d'affichage dans Gmsh"
     colormap: int = 4 #Pour changer la couleur
-    temperature_min: float = -50.0
-    temperature_max: float = 1500.0
+    temperature_min: float = 0
+    temperature_max: float = 250
     background_color: tuple = (255, 255, 255)
     view_light: int = 1
     hide_mesh_edges: bool = True #Cache le maillage pour que ça soit plus joli
     contact_surface_name: str = "ContactSurface"
     other_surface_name: str = "OtherSurfaces"
     model_name: str = "Brake_Disc_Heat_Flux"
-    geometry_model: str = "WVA" #Choix du modèle de disque de frein : "disk1", "Pogi" ou "WVA"
+    geometry_model: str = "Pogi" #Choix du modèle de disque de frein : "disk1", "Pogi" ou "WVA"
     use_gmsh_gui: bool = True
 
 from stiffness import assemble_rhs_neumann, assemble_stiffness_and_rhs, assemble_boundary_convection
@@ -193,7 +203,7 @@ def main():
 
     if params.h_conv > 0.0:
         def h_effective(x):
-            return params.h_conv * (1.0 + params.convection_speed_factor * params.wind_speed)
+            return params.h_conv
 
         for name in neumann_data:
             entities = getPhysicalEntities(name)
